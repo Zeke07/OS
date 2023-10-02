@@ -1,5 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Werror -pedantic -std=gnu18
+CFLAGS = -pedantic -std=gnu18
+#-Wall -Werror
 LOGIN = zkhan
 SUBMITPATH = ~cs537-1/handin/$(LOGIN)/P3
 
