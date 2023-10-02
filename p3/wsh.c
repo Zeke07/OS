@@ -77,12 +77,11 @@ void wsh_execute(struct Prog *args){
 
     char path[256];
     snprintf(path, 256, "/usr/bin/%s", args->tokens[0]);
+    int cmd_mode = is_built_in_cmd(args);
+    if (cmd_mode != NO_CMD) built_in_cmds[cmd_mode](args);
+    else {
 
-
-    if (access(path, X_OK) != 0 && access(path+4, X_OK) != 0) printf("Command not found\n");
-
-    else { // execute user program
-
+        // execute user program
         pid_t pid = fork();
 
         if (pid < 0) {
@@ -90,126 +89,79 @@ void wsh_execute(struct Prog *args){
         } else if (pid == 0) {
 
 
-            if (args->fd[0] != STDIN_FILENO) {
+            if (args->fd[0] != STDIN_FILENO)
                 dup2(args->fd[0], STDIN_FILENO);
-                close(args->fd[0]);
-            }
-            if (args->fd[1] != STDOUT_FILENO) {
-               dup2(args->fd[1], STDOUT_FILENO);
-               close(args->fd[1]);
-            }
+
+            if (args->fd[1] != STDOUT_FILENO)
+                dup2(args->fd[1], STDOUT_FILENO);
 
 
-            //printf("PAIR: (%d, %d)\n", args->fd[0], args->fd[1]);
-            //dup2(args->fd[0], args->fd[1]);
-            //close(args->fd[1]);
+            close_fds(args->pip, args->pip_size);
 
+            //for (int i = 0; i < args->pip_size; i++)
+            //    printf("Status of %d: (%d)\n", args->pip[i], fcntl(args->pip[i], F_GETFD));
+
+            // exec user prog
             execvp(args->tokens[0], args->tokens);
+
             FAIL("Failed to execute program", -1);
         }
+        /*
         else {
             int status;
             wait(&status);
             if (status < 0)
                 FAIL("Wait fail", -1);
 
-
         }
+         */
     }
 
 }
 
+void close_fds(int *fds, int size){
+    for (int i = 0; i < size; i++){
+        if (fds[i] != STDIN_FILENO && fds[i] != STDOUT_FILENO)
+            close(fds[i]);
+    }
+}
+
 void cmd_pipeline(struct CMD *cmd){
 
+    // load any file descriptors necessary to run the command pipeline
     int n_descriptors = ((cmd->size-1)*2)+2;
     int pipes[n_descriptors];
     pipes[0] = STDIN_FILENO;
     pipes[n_descriptors-1] = STDOUT_FILENO;
-    //printf("Num Desc: %d\n", n_descriptors);
     for (int i = 1; i < n_descriptors-1; i+=2){
 
         int fd[2];
         if (pipe(fd) < 0)
             FAIL("failed to create pipe", -1);
 
-        pipes[i] = fd[1]; // write end
+        pipes[i] = fd[1]; // write end of
         pipes[i+1] = fd[0]; // read end
 
     }
 
     // exec progs
-
     for (int i = 0; i < cmd->size; i++) {
 
         cmd->progs[i].fd = pipes+(i*2);
-        printf("PAIR: (%d, %d)\n", cmd->progs[i].fd[0], cmd->progs[i].fd[1]);
+        cmd->progs[i].pip = pipes;
+        cmd->progs[i].pip_size = n_descriptors;
         wsh_execute(cmd->progs+i);
 
     }
 
-    // close any new file descriptors
-    for (int i = 1; i < n_descriptors-1; i++) close(pipes[i]);
+    close_fds(pipes, n_descriptors);
 
-    /*
-    cmd->progs[0].fd[0] = 1;
-    cmd->progs[0].fd[1] = 4;
-    cmd->progs[1].fd[0] = 0;
-    cmd->progs[1].fd[1] = 3;
-
-    wsh_execute(cmd->progs);
-    wsh_execute(cmd->progs+1);
-
-
-    int STD = 0;
-    int nfd[2];
+    // wait on all children - CHANGE ONCE GPID IMPLEMENTED
     for (int i = 0; i < cmd->size; i++){
-        if (STD % 2 == 0 && pipe(nfd) < 0) FAIL("failed to create pipe", -1);
-            cmd->progs[i].fd[0] = STD+1%2;
-            cmd->progs[i].fd[1] = nfd[(STD+1)%2];
-            STD++;
-            STD %= 2;
-
-        wsh_execute(cmd->progs+i);
+        int status;
+        waitpid(-1, &status, WUNTRACED);
     }
 
-    // init file descriptors to link adjacent programs (there are n-1 pipes, n+1 descriptors)
-    int pipes[cmd->size+1];
-    //pipes[0] = STDIN_FILENO;
-    pipes[cmd->size] = STDOUT_FILENO;
-
-     for (int i = 0; i < cmd->size; i+=2){
-         if (i != cmd->size-1) {
-             if (pipe(pipes + i) < 0) FAIL("failed to create pipe", -1);
-         }
-         else {
-             int fds[2];
-             if (pipe(fds) < 0) FAIL("failed to create pipe", -1);
-             pipes[i] = fds[0];
-             close(fds[1]);
-         }
-     }
-
-
-    for (int i = 0; i < cmd->size+1; i++)
-        printf("Status of %d: (%d)\n", pipes[i], fcntl(pipes[i], F_GETFD));
-
-
-
-
-    for (int i = 0; i < cmd->size; i++) {
-        //if (pipe(cmd->progs[i].fd < 0)) FAIL("failed to create pipe", -1);
-        cmd->progs[i].fd[0] = pipes[i];
-        cmd->progs[i].fd[1] = pipes[i+1];
-        wsh_execute(cmd->progs+i);
-
-    }
-
-
-     for (int i = 0; i < cmd->size; i++) {
-         printf("Status of %d: (%d)\n", pipes[i], fcntl(pipes[i], F_GETFD));
-         close(pipes[i]);
-     }
-     */
 
 }
 
@@ -229,27 +181,6 @@ int main(int argc, char **argv){
                     // execute command chain from user input
                     cmd_pipeline(&c);
 
-                    /* DEBUG
-                    for (int i = 0; i < c.size; i++){
-                        for (int j = 0; j < c.progs[i].size-1; j++){
-                            printf("%s", c.progs[i].tokens[j]);
-                        }
-                    }
-                    */
-                /* REFACTOR
-                // this only runs a single program
-                struct Prog tok = process_inputs(buffer);
-
-                // built-in commands
-                int cmd = is_built_in_cmd(&tok);
-                if (cmd != 0)
-                    built_in_cmds[cmd](&tok);
-
-                // user program execute
-                wsh_execute(&tok);
-
-                }
-                */
 
                 // free allocated buffers, initiate next prompt
                 for (int i = 0; i < c.size; i++) {
