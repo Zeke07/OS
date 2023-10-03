@@ -103,20 +103,19 @@ void wsh_execute(struct Prog *args){
 
             // exec user prog
             execvp(args->tokens[0], args->tokens);
-
             FAIL("Failed to execute program", -1);
         }
-        /*
-        else {
-            int status;
-            wait(&status);
-            if (status < 0)
-                FAIL("Wait fail", -1);
 
-        }
-         */
     }
 
+}
+void wsh_clean(struct CMD *c){
+    for (int i = 0; i < c->size; i++) {
+        for (int j = 0; j < c->progs[i].size - 1; j++)
+            free(c->progs[i].tokens[j]);
+        free(c->progs[i].tokens);
+    }
+    free(c->progs);
 }
 
 void close_fds(int *fds, int size){
@@ -154,11 +153,12 @@ void cmd_pipeline(struct CMD *cmd){
 
     }
 
+    // close all file descriptors for clean-up
     close_fds(pipes, n_descriptors);
 
     // wait on all children - CHANGE ONCE GPID IMPLEMENTED
     for (int i = 0; i < cmd->size; i++){
-        int status;
+        int status; // change later
         waitpid(-1, &status, WUNTRACED);
     }
 
@@ -166,42 +166,39 @@ void cmd_pipeline(struct CMD *cmd){
 }
 
 int main(int argc, char **argv){
+    int mode = INTERACTIVE; // default is interactive mode
 
-    // interactive mode
-    if (argc == 1){
+    // swap to batch processing if execute has an arg
+    FILE *fp = NULL;
+    if (argc > 1) {
+        mode = BATCH;
+        fp = freopen(argv[1], "r", stdin);
+        if (fp == NULL) FAIL("Null file pointer\n", -1);
+    }
 
-        char *buffer;
-        printf("wsh>");
-        while (getline(&buffer, &BUFFER_SIZE, stdin) >= 0){
+    // NOTE: things to add to clean --> free any mallocs on exit, close any open files
+    char *buffer; // <NULL>
+    if (mode) printf("wsh> ");
+    while (getline(&buffer, &BUFFER_SIZE, stdin) >= 0){
 
-            // if stdin stream is non-empty, process any inputs
-            if (strlen(buffer) > 0){
-                    struct CMD c = process_command(buffer);
+        // if stdin stream is non-empty, process any inputs
+        if (strlen(buffer) > 0){
 
-                    // execute command chain from user input
-                    cmd_pipeline(&c);
+            // load all program calls/pipes by the user into command-chain struct
+            struct CMD c = process_command(buffer);
 
+            // execute command chain from user input
+            cmd_pipeline(&c);
 
-                // free allocated buffers, initiate next prompt
-                for (int i = 0; i < c.size; i++) {
-                    for (int j = 0; j < c.progs[i].size - 1; j++)
-                        free(c.progs[i].tokens[j]);
-                    free(c.progs[i].tokens);
-                }
-                free(c.progs);
-
-                printf("wsh>");
-
-            }
+            // free allocated buffers, initiate next prompt
+            wsh_clean(&c);
+            if (mode) printf("wsh> ");
 
         }
 
     }
 
-    // batch input (shell script)
-    else {
-
-    }
+    fclose(fp); // Free allocation to batch file
     return 0;
 }
 

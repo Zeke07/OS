@@ -17,6 +17,8 @@
 
 
 #define FAIL(msg, code) {perror(msg); exit(code);}
+#define BATCH 0
+#define INTERACTIVE 1
 #define NO_CMD 0
 #define EXIT 1
 
@@ -44,7 +46,7 @@ struct Prog process_inputs(char *buffer);
 void wsh_execute(struct Prog *args);
 void cmd_pipeline(struct CMD *cmd);
 void close_fds(int *pipes, int size);
-
+void wsh_clean(struct CMD *c);
 
 static int (*built_in_cmds[])(struct Prog*) = {
         [EXIT] = wsh_exit
