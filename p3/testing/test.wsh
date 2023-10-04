@@ -1,5 +1,2 @@
 ls -la
-exit
 cat Makefile | grep wsh 
-
-

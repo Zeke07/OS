@@ -17,10 +17,18 @@
 
 
 #define FAIL(msg, code) {perror(msg); exit(code);}
+#define SAFE_EXIT(msg) {printf("%s", msg); exit(0);}
+
+// shell modes
 #define BATCH 0
 #define INTERACTIVE 1
+
+// built-in command codes
 #define NO_CMD 0
 #define EXIT 1
+#define FG 2
+#define BG 3
+#define JOBS 4
 
 size_t BUFFER_SIZE = 256;
 struct Prog {
@@ -34,10 +42,14 @@ struct Prog {
 struct CMD {
     struct Prog *progs;
     int size;
+    int bg;
 };
 
 // built-in commands
 int wsh_exit(struct Prog *args);
+//int wsh_fg();
+//int wsh_bg();
+//int wsh_jobs();
 
 
 // shell functions
@@ -49,7 +61,10 @@ void close_fds(int *pipes, int size);
 void wsh_clean(struct CMD *c);
 
 static int (*built_in_cmds[])(struct Prog*) = {
-        [EXIT] = wsh_exit
+        [EXIT] = wsh_exit //,
+        //[FG] = wsh_fg,
+        //[BG] = wsh_bg,
+        //[JOBS] = wsh_jobs,
 };
 
 #endif

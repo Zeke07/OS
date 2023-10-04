@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -pedantic -std=gnu18
-#-Wall -Werror
+CFLAGS = -Wall -Werror -pedantic -std=gnu18
+
 LOGIN = zkhan
 SUBMITPATH = ~cs537-1/handin/$(LOGIN)/P3
 
@@ -19,12 +19,13 @@ pack: wsh.c wsh.h Makefile README.md
 submit: pack $(LOGIN).tar.gz
 	cp $(LOGIN).tar.gz $(SUBMITPATH)
 
-tests:
+os_tests:
+	#~cs537-1/tests/P3/test-exec.csh
 	~cs537-1/tests/P3/test-pipe.csh -v
     #~cs537-1/tests/P3/test-cd.csh
-    #~cs537-1/tests/P3/test-exec.csh
     #~cs537-1/tests/P3/test-job-control.csh
-
+zeke_tests: background.c
+	$(CC) $(CFLAGS) -o background background.c
 
 clean:
 	rm -f wsh

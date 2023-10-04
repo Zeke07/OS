@@ -8,7 +8,7 @@
 
 
 int wsh_exit(struct Prog *args){
-    exit(EXIT_SUCCESS);
+    SAFE_EXIT(""); // buffer flushed by <enter> on exit call
 }
 
 
@@ -16,16 +16,56 @@ struct CMD process_command(char *buffer){
     struct CMD c = {NULL, 0};
     char *token = NULL;
 
+    char *amp_occ;
+    if ((amp_occ = strstr(buffer, "&")) != NULL){
+        if (strstr(amp_occ+1, "&") != NULL) {
+            SAFE_EXIT("Misplaced '&' token\n");
+        }
+        else {
+            char *i;
+            i = amp_occ + 1;
+            while (*i != '\0'){
+                if (*i != EOF && *i != ' ' && *i != '\n')
+                    SAFE_EXIT("Misplaced '&' token\n");
+                i++;
+            }
+        }
+
+        *amp_occ = '\0';
+        c.bg = 1;
+    }
+
+    /*
+    while (i >= 0){
+        if (buffer[i] == '&') {
+            amp_occ = buffer+i;
+            break;
+        }
+        i--;
+    }
+
+    // Ensure no duplicate
+    if (amp_occ != NULL){
+        if (amp_occ == strstr(buffer, "&")){
+            printf("got here\n");
+            *amp_occ = '\0';
+            while (amp_occ != '\n')
+        }
+        else SAFE_EXIT("Misplaced '&' token\n");
+    }
+    */
 
     while ((token = strsep(&buffer, "|")) != NULL){
         if (strcmp(token, "") != 0){
 
             // truncate a newline if it exists
             size_t tok_len = strlen(token);
-            if (token[tok_len-1] == '\n') {
+
+            // REMOVE LATER
+            if (token[tok_len-1] == '\n')
                 token[tok_len-1] = '\0';
                 // add bit here if needed
-            }
+
             c.progs = realloc(c.progs, sizeof(struct Prog) * (c.size + 1));
             c.progs[c.size++] = process_inputs(token);
         }
@@ -158,7 +198,7 @@ void cmd_pipeline(struct CMD *cmd){
 
     // wait on all children - CHANGE ONCE GPID IMPLEMENTED
     for (int i = 0; i < cmd->size; i++){
-        int status; // change later
+        int status; // change later, check output
         waitpid(-1, &status, WUNTRACED);
     }
 
@@ -167,6 +207,7 @@ void cmd_pipeline(struct CMD *cmd){
 
 int main(int argc, char **argv){
     int mode = INTERACTIVE; // default is interactive mode
+
 
     // swap to batch processing if execute has an arg
     FILE *fp = NULL;
@@ -178,27 +219,37 @@ int main(int argc, char **argv){
 
     // NOTE: things to add to clean --> free any mallocs on exit, close any open files
     char *buffer; // <NULL>
-    if (mode) printf("wsh> ");
-    while (getline(&buffer, &BUFFER_SIZE, stdin) >= 0){
+    if (mode) printf("wsh> "); // check if interactive mode (1)
+    while (1){
 
-        // if stdin stream is non-empty, process any inputs
-        if (strlen(buffer) > 0){
+        // EOF CASE - CTRL + D
+        if (feof(stdin)) {
+            if (!mode) {
+                fclose(fp); // Free allocation to batch file if applicable
+                SAFE_EXIT("") // buffer flushed by last exec call
+            }
+            SAFE_EXIT("\n");
+        }
 
-            // load all program calls/pipes by the user into command-chain struct
-            struct CMD c = process_command(buffer);
+        if (getline(&buffer, &BUFFER_SIZE, stdin) >= 0) {
+            // if stdin stream is non-empty, process any inputs
+            if (strlen(buffer) > 0) {
 
-            // execute command chain from user input
-            cmd_pipeline(&c);
+                // load all program calls/pipes by the user into command-chain struct
+                struct CMD c = process_command(buffer);
 
-            // free allocated buffers, initiate next prompt
-            wsh_clean(&c);
-            if (mode) printf("wsh> ");
+                // execute command chain from user input
+                cmd_pipeline(&c);
 
+                // free allocated buffers, initiate next prompt
+                wsh_clean(&c);
+                if (mode) printf("wsh> ");
+
+            }
         }
 
     }
 
-    fclose(fp); // Free allocation to batch file
-    return 0;
+
 }
 
