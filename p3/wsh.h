@@ -49,7 +49,6 @@ struct Pipeline {
     int size; // number of programs
     int bg; // if currently a background process
     int init_bg; // if command is spawned with &
-    int built_in; // if program is a built-in cmd (to avoid any waits)
 };
 
 struct Job {

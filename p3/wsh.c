@@ -217,72 +217,60 @@ void wsh_execute(struct Pipeline *c, struct Program *args){
     char path[BUFFER_SIZE];
     snprintf(path, BUFFER_SIZE, "/usr/bin/%s", args->tokens[0]);
     int cmd_mode = is_built_in_cmd(args);
-    if (cmd_mode != NO_CMD) { // FIX HANG WITH MISPLACED BUILT-IN
-        if (c->size > 1) WSH_FAULT("Misplaced Built-in Command\n",-1)
-        else {
+
+    // execute new child process
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        WSH_FAULT("Failed to spawn process on fork\n", -1);
+    } else if (pid == 0) { // CHILD
+
+        // configure file-descriptors with stdin/out
+        if (args->fd[0] != STDIN_FILENO)
+            dup2(args->fd[0], STDIN_FILENO);
+
+        if (args->fd[1] != STDOUT_FILENO)
+            dup2(args->fd[1], STDOUT_FILENO);
+
+
+        close_fds(args->pip, args->pip_size);
+
+
+        // execute program
+        // case: built-in command --> invoke function and exit
+        if (cmd_mode != NO_CMD) {
             built_in_cmds[cmd_mode](c, args);
-            c->built_in = 1;
+            exit(0);
         }
+        // case: linux program --> call exec, fail if child moves past it
+        else execvp(args->tokens[0], args->tokens);
+        WSH_FAULT("Failed to execute program\n", -1);
+    }
+
+    // PARENT: establish process/group ids of the spawned child
+    args->pid = pid; // record pid of current process
+    pid_t pgid; // for setting group id of the current process
+
+
+
+    // set pgid based on background bit, else pgid shared with parent
+    if (c->bg){
+
+
+        // if this program is the first in a chain, set group id to its own pid
+        if (args==c->progs) pgid = pid;
+
+        // else, the first (lead) of the group is already initialized
+        // set any successive programs in the chain to this pgid
+        else pgid = c->progs[0].pgid;
 
     }
-    else {
+    else pgid = getpid();
 
-        // execute user program
-        pid_t pid = fork();
-
-        if (pid < 0) {
-            WSH_FAULT("Failed to spawn process on fork\n", -1);
-        } else if (pid == 0) { // CHILD
-
-            // configure file-descriptors with stdin/out
-            if (args->fd[0] != STDIN_FILENO)
-                dup2(args->fd[0], STDIN_FILENO);
-
-            if (args->fd[1] != STDOUT_FILENO)
-                dup2(args->fd[1], STDOUT_FILENO);
-
-
-            close_fds(args->pip, args->pip_size);
-
-            // DEBUG FOR FD
-            //for (int i = 0; i < args->pip_size; i++)
-            //    printf("Status of %d: (%d)\n", args->pip[i], fcntl(args->pip[i], F_GETFD));
-
-            // exec user prog
-            execvp(args->tokens[0], args->tokens);
-            WSH_FAULT("Failed to execute program\n", -1);
-        }
-
-        // PARENT: establish process/group ids of the spawned child
-        args->pid = pid; // record pid of current process
-        pid_t pgid; // for setting group id of the current process
-        //printf("PID: %d\n", pid); DEBUG PID
-
-
-        // set pgid based on background bit, else pgid shared with parent
-        if (c->bg){
-
-
-            // if this program is the first in a chain, set group id to its own pid
-            if (args==c->progs) pgid = pid;
-
-            // else, the first (lead) of the group is already initialized
-            // set any successive programs in the chain to this pgid
-            else pgid = c->progs[0].pgid;
-
-        }
-        else pgid = getpid();
-
-        // set group id of process
-        // record group id in struct
-        setpgid(pid, pgid);
-        args->pgid = pgid;
-
-
-
-
-
-    }
+    // set group id of process
+    // record group id in struct
+    setpgid(pid, pgid);
+    args->pgid = pgid;
 
 }
 
@@ -331,10 +319,6 @@ void cmd_pipeline(struct Pipeline *cmd){
         cmd->progs[i].pip_size = n_descriptors;
         wsh_execute(cmd, cmd->progs+i);
 
-        // DEBUG STATEMENT FOR SETTING PIDS
-        // printf("FIELDS: (%d, %d)\n", cmd->progs[i].pid, cmd->progs[i].pgid);
-
-
     }
 
 
@@ -342,18 +326,17 @@ void cmd_pipeline(struct Pipeline *cmd){
     close_fds(pipes, n_descriptors);
 
     // used to ensure waits are not issued on built_ins while background processes in op (BUG REPAIR)
-    if (!cmd->built_in) {
-        // wait on all children in the foreground
-        if (!cmd->bg) {
-            add_job(cmd, foreground); // add to foreground structure
-            for (int i = 0; i < cmd->size; i++) {
-                int status; // change later, check output
-                waitpid(-1, &status, WUNTRACED); // WUNTRACED, WNOHANG
-            }
-        } else add_job(cmd, background); // case: job is in the background (post exec wait)
-    }
 
-    // For now, ignore built-ins for job support
+    // wait on all children in the foreground
+    if (!cmd->bg) {
+        add_job(cmd, foreground); // add to foreground structure
+        for (int i = 0; i < cmd->size; i++) {
+            int status; // change later, check output
+            waitpid(-1, &status, WUNTRACED); // WUNTRACED, WNOHANG
+        }
+    } else add_job(cmd, background); // case: job is in the background (post exec wait)
+
+
 
 }
 
