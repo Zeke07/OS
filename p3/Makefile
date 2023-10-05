@@ -13,6 +13,9 @@ wsh: wsh.c wsh.h
 run: wsh
 	./wsh
 
+debug: wsh.c wsh.h
+	$(CC) -g $(CFLAGS) -o wsh_debug $<
+
 pack: wsh.c wsh.h Makefile README.md
 	tar -czvf $(LOGIN).tar.gz $^
 

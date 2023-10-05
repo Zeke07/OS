@@ -6,14 +6,129 @@
 #include "wsh.h"
 
 
+struct Job background[256];
+struct Job foreground[256];
+void format_job(char string_builder[256], struct Pipeline *cmd, int id){
 
-int wsh_exit(struct Prog *args){
-    SAFE_EXIT(""); // buffer flushed by <enter> on exit call
+
+    char *ptr = string_builder;
+    snprintf(string_builder, BUFFER_SIZE, "%d: ", id);
+    ptr+=3;
+
+    for (int i = 0; i < cmd->size; i++){
+        for (int j = 0; j < cmd->progs[i].size-1; j++){ // truncate for padded null pointer
+
+            int length = strlen(cmd->progs[i].tokens[j]);
+            if (string_builder + BUFFER_SIZE == string_builder+length+1) // account for padded null-terminator
+                SAFE_EXIT("Job string exceeds buffer size\n");
+
+            snprintf(ptr, (int) ((string_builder + BUFFER_SIZE) - ptr), "%s ", cmd->progs[i].tokens[j]);
+            ptr+=length+1;
+        }
+        if (i != cmd->size-1) {
+            snprintf(ptr,  (int) ((string_builder + BUFFER_SIZE) - ptr), "| ");
+            ptr+=1;
+        }
+
+    }
+
+    if (cmd->init_bg) {
+        snprintf(ptr,  (int) ((string_builder + BUFFER_SIZE) - ptr), "&");
+        ptr+=1;
+    }
+
+
 }
 
 
-struct CMD process_command(char *buffer){
-    struct CMD c = {NULL, 0};
+int wsh_exit(struct Pipeline *cmd, struct Program *args){
+    SAFE_EXIT(""); // buffer flushed by <enter> on exit call
+}
+
+int wsh_jobs(struct Pipeline *cmd, struct Program *args){
+
+    update_job_list(cmd, background);
+
+    int id = 1;
+    for (int i = 0; i < BUFFER_SIZE; i++){
+        if (background[i].valid) {
+            char line[256];
+            format_job(line, background[i].cmd, id);
+            printf("%s\n", line); // FLUSH THE BUFFER
+            id++;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * Update job list - free any stale processes
+ * if a job has terminated
+ *
+ * @param cmd
+ * @param jobs
+ */
+void update_job_list(struct Pipeline *cmd, struct Job jobs[256]){
+
+    for (int i = 0; i < BUFFER_SIZE; i++){
+
+        // evaluate "valid" processes
+        if (background[i].valid){
+
+            int status;
+            int cpid;
+            if (background[i].cmd->size==1)
+                cpid = background[i].cmd->progs[0].pid;
+            else cpid = background[i].cmd->progs[background[i].cmd->size-1].pid;
+
+            // on kill(9), waitpid will fire -1, check if the pid exists (BUG)
+
+
+            //if (waitpid(cpid, &status, WNOHANG) < 0) WSH_FAULT("Wait fail on job update\n", -1);
+            waitpid(cpid, &status, WNOHANG);
+
+            // rc is 0 on exit
+            if (WIFEXITED(status) != 0) {
+                background[i].valid = 0;
+
+                // free allocated structure when process has exited()
+                wsh_clean(background[i].cmd);
+                background[i].cmd = NULL;
+            }
+
+        }
+    }
+
+
+}
+
+void add_job(struct Pipeline *cmd, struct Job jobs[256]){
+
+    // check for any completed jobs up to this point
+    update_job_list(cmd, background);
+
+    // insert job to the first invalid slot in the array
+    int status = 0;
+    for (int i = 0; i < BUFFER_SIZE; i++){
+        if (!jobs[i].valid) {
+            jobs[i].cmd = cmd;
+            jobs[i].valid = 1;
+            status = 1;
+            break;
+        }
+    }
+
+    // job list is full
+    if (!status) SAFE_EXIT("Job could not be appended\n");
+}
+
+struct Pipeline* process_command(char *buffer){
+
+    // malloc a Pipeline, init fields
+    struct Pipeline *c = malloc(sizeof(struct Pipeline));
+    *c = (struct Pipeline) {NULL, 0, 0, 0};
+
     char *token = NULL;
 
     char *amp_occ;
@@ -32,28 +147,10 @@ struct CMD process_command(char *buffer){
         }
 
         *amp_occ = '\0';
-        c.bg = 1;
+        c->bg = 1;
+        c->init_bg = 1;
     }
 
-    /*
-    while (i >= 0){
-        if (buffer[i] == '&') {
-            amp_occ = buffer+i;
-            break;
-        }
-        i--;
-    }
-
-    // Ensure no duplicate
-    if (amp_occ != NULL){
-        if (amp_occ == strstr(buffer, "&")){
-            printf("got here\n");
-            *amp_occ = '\0';
-            while (amp_occ != '\n')
-        }
-        else SAFE_EXIT("Misplaced '&' token\n");
-    }
-    */
 
     while ((token = strsep(&buffer, "|")) != NULL){
         if (strcmp(token, "") != 0){
@@ -61,20 +158,19 @@ struct CMD process_command(char *buffer){
             // truncate a newline if it exists
             size_t tok_len = strlen(token);
 
-            // REMOVE LATER
             if (token[tok_len-1] == '\n')
                 token[tok_len-1] = '\0';
-                // add bit here if needed
 
-            c.progs = realloc(c.progs, sizeof(struct Prog) * (c.size + 1));
-            c.progs[c.size++] = process_inputs(token);
+            // SEG FAULT HERE AFTER kill -9, null out ptr
+            c->progs = realloc(c->progs, sizeof(struct Program) * (c->size + 1));
+            c->progs[c->size++] = process_inputs(token);
         }
     }
 
     return c;
 }
 
-struct Prog process_inputs(char *buffer){
+struct Program process_inputs(char *buffer){
 
     char **tokens = NULL;
     char *token = NULL;
@@ -100,35 +196,45 @@ struct Prog process_inputs(char *buffer){
     tokens = realloc(tokens, sizeof(char*) * (tok_size+1));
     tokens[tok_size++] = NULL;
 
-    struct Prog t = {tokens, tok_size};
+    struct Program t = {tokens, tok_size};
     return t;
 
 }
 
-int is_built_in_cmd(struct Prog *args){
+int is_built_in_cmd(struct Program *args){
 
     if (args->size == 2 && strcmp(args->tokens[0],"exit")==0)
             return EXIT;
+    if (args->size == 2 && strcmp(args->tokens[0],"jobs")==0)
+        return JOBS;
 
 
     return NO_CMD;
 }
-void wsh_execute(struct Prog *args){
+void wsh_execute(struct Pipeline *c, struct Program *args){
 
-    char path[256];
-    snprintf(path, 256, "/usr/bin/%s", args->tokens[0]);
+    // validate program - check if it is either a user program or built-in command
+    char path[BUFFER_SIZE];
+    snprintf(path, BUFFER_SIZE, "/usr/bin/%s", args->tokens[0]);
     int cmd_mode = is_built_in_cmd(args);
-    if (cmd_mode != NO_CMD) built_in_cmds[cmd_mode](args);
+    if (cmd_mode != NO_CMD) { // FIX HANG WITH MISPLACED BUILT-IN
+        if (c->size > 1) WSH_FAULT("Misplaced Built-in Command\n",-1)
+        else {
+            built_in_cmds[cmd_mode](c, args);
+            c->built_in = 1;
+        }
+
+    }
     else {
 
         // execute user program
         pid_t pid = fork();
 
         if (pid < 0) {
-            FAIL("Failed to spawn process on fork\n", -1);
-        } else if (pid == 0) {
+            WSH_FAULT("Failed to spawn process on fork\n", -1);
+        } else if (pid == 0) { // CHILD
 
-
+            // configure file-descriptors with stdin/out
             if (args->fd[0] != STDIN_FILENO)
                 dup2(args->fd[0], STDIN_FILENO);
 
@@ -138,24 +244,58 @@ void wsh_execute(struct Prog *args){
 
             close_fds(args->pip, args->pip_size);
 
+            // DEBUG FOR FD
             //for (int i = 0; i < args->pip_size; i++)
             //    printf("Status of %d: (%d)\n", args->pip[i], fcntl(args->pip[i], F_GETFD));
 
             // exec user prog
             execvp(args->tokens[0], args->tokens);
-            FAIL("Failed to execute program", -1);
+            WSH_FAULT("Failed to execute program\n", -1);
         }
+
+        // PARENT: establish process/group ids of the spawned child
+        args->pid = pid; // record pid of current process
+        pid_t pgid; // for setting group id of the current process
+        //printf("PID: %d\n", pid); DEBUG PID
+
+
+        // set pgid based on background bit, else pgid shared with parent
+        if (c->bg){
+
+
+            // if this program is the first in a chain, set group id to its own pid
+            if (args==c->progs) pgid = pid;
+
+            // else, the first (lead) of the group is already initialized
+            // set any successive programs in the chain to this pgid
+            else pgid = c->progs[0].pgid;
+
+        }
+        else pgid = getpid();
+
+        // set group id of process
+        // record group id in struct
+        setpgid(pid, pgid);
+        args->pgid = pgid;
+
+
+
+
 
     }
 
 }
-void wsh_clean(struct CMD *c){
+
+void wsh_clean(struct Pipeline *c){
     for (int i = 0; i < c->size; i++) {
-        for (int j = 0; j < c->progs[i].size - 1; j++)
+
+        // free each program arg set
+        for (int j = 0; j < c->progs[i].size - 1; j++) // NULL-ptr padding
             free(c->progs[i].tokens[j]);
         free(c->progs[i].tokens);
     }
-    free(c->progs);
+    free(c->progs); // free process structs on heap
+    free(c); // free pipeline struct
 }
 
 void close_fds(int *fds, int size){
@@ -165,7 +305,7 @@ void close_fds(int *fds, int size){
     }
 }
 
-void cmd_pipeline(struct CMD *cmd){
+void cmd_pipeline(struct Pipeline *cmd){
 
     // load any file descriptors necessary to run the command pipeline
     int n_descriptors = ((cmd->size-1)*2)+2;
@@ -176,9 +316,9 @@ void cmd_pipeline(struct CMD *cmd){
 
         int fd[2];
         if (pipe(fd) < 0)
-            FAIL("failed to create pipe", -1);
+            WSH_FAULT("failed to create pipe\n", -1);
 
-        pipes[i] = fd[1]; // write end of
+        pipes[i] = fd[1]; // write end
         pipes[i+1] = fd[0]; // read end
 
     }
@@ -189,19 +329,35 @@ void cmd_pipeline(struct CMD *cmd){
         cmd->progs[i].fd = pipes+(i*2);
         cmd->progs[i].pip = pipes;
         cmd->progs[i].pip_size = n_descriptors;
-        wsh_execute(cmd->progs+i);
+        wsh_execute(cmd, cmd->progs+i);
+
+        // DEBUG STATEMENT FOR SETTING PIDS
+        // printf("FIELDS: (%d, %d)\n", cmd->progs[i].pid, cmd->progs[i].pgid);
+
 
     }
+
 
     // close all file descriptors for clean-up
     close_fds(pipes, n_descriptors);
 
-    // wait on all children - CHANGE ONCE GPID IMPLEMENTED
-    for (int i = 0; i < cmd->size; i++){
-        int status; // change later, check output
-        waitpid(-1, &status, WUNTRACED);
+    // used to ensure waits are not issued on built_ins while background processes in op (BUG REPAIR)
+    if (!cmd->built_in) {
+        // wait on all children in the foreground
+        if (!cmd->bg) {
+            add_job(cmd, foreground); // add to foreground structure
+            for (int i = 0; i < cmd->size; i++) {
+                int status; // change later, check output
+                waitpid(-1, &status, WUNTRACED); // WUNTRACED, WNOHANG
+            }
+        } else add_job(cmd, background); // case: job is in the background (post exec wait)
     }
 
+    // For now, ignore built-ins for job support
+
+}
+
+void configure_handlers(){
 
 }
 
@@ -214,13 +370,15 @@ int main(int argc, char **argv){
     if (argc > 1) {
         mode = BATCH;
         fp = freopen(argv[1], "r", stdin);
-        if (fp == NULL) FAIL("Null file pointer\n", -1);
+        if (fp == NULL) WSH_FAULT("Null file pointer\n", -1);
     }
 
     // NOTE: things to add to clean --> free any mallocs on exit, close any open files
     char *buffer; // <NULL>
-    if (mode) printf("wsh> "); // check if interactive mode (1)
+
     while (1){
+
+        if (mode) printf("wsh> "); // check if interactive mode (1)
 
         // EOF CASE - CTRL + D
         if (feof(stdin)) {
@@ -236,20 +394,17 @@ int main(int argc, char **argv){
             if (strlen(buffer) > 0) {
 
                 // load all program calls/pipes by the user into command-chain struct
-                struct CMD c = process_command(buffer);
+
+                // ENORMOUS BUG: things are getting set to stack pointer that gets destroyed! MALLOC THE CMD
+                struct Pipeline *c = process_command(buffer);
 
                 // execute command chain from user input
-                cmd_pipeline(&c);
+                cmd_pipeline(c);
 
-                // free allocated buffers, initiate next prompt
-                wsh_clean(&c);
-                if (mode) printf("wsh> ");
 
             }
         }
-
     }
-
 
 }
 
