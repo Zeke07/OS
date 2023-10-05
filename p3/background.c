@@ -3,7 +3,6 @@
 
 int main(int argc, char **argv){
     while(1){
-        //printf("zeke\n");
         sleep(5);
     }
 

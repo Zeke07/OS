@@ -7,7 +7,7 @@
 
 
 struct Job background[256];
-struct Job foreground[256];
+struct Job foreground;
 void format_job(char string_builder[256], struct Pipeline *cmd, int id){
 
 
@@ -45,13 +45,12 @@ int wsh_exit(struct Pipeline *cmd, struct Program *args){
     SAFE_EXIT(""); // buffer flushed by <enter> on exit call
 }
 
-int wsh_jobs(struct Pipeline *cmd, struct Program *args){
-
-    update_job_list(cmd, background);
+int wsh_jobs(){
 
     int id = 1;
     for (int i = 0; i < BUFFER_SIZE; i++){
         if (background[i].valid) {
+            //printf("Ever here??\n");
             char line[256];
             format_job(line, background[i].cmd, id);
             printf("%s\n", line); // FLUSH THE BUFFER
@@ -62,58 +61,17 @@ int wsh_jobs(struct Pipeline *cmd, struct Program *args){
     return 0;
 }
 
-/**
- * Update job list - free any stale processes
- * if a job has terminated
- *
- * @param cmd
- * @param jobs
- */
-void update_job_list(struct Pipeline *cmd, struct Job jobs[256]){
-
-    for (int i = 0; i < BUFFER_SIZE; i++){
-
-        // evaluate "valid" processes
-        if (background[i].valid){
-
-            int status;
-            int cpid;
-            if (background[i].cmd->size==1)
-                cpid = background[i].cmd->progs[0].pid;
-            else cpid = background[i].cmd->progs[background[i].cmd->size-1].pid;
-
-            // on kill(9), waitpid will fire -1, check if the pid exists (BUG)
 
 
-            //if (waitpid(cpid, &status, WNOHANG) < 0) WSH_FAULT("Wait fail on job update\n", -1);
-            waitpid(cpid, &status, WNOHANG);
+void add_job(struct Pipeline *cmd){
 
-            // rc is 0 on exit
-            if (WIFEXITED(status) != 0) {
-                background[i].valid = 0;
-
-                // free allocated structure when process has exited()
-                wsh_clean(background[i].cmd);
-                background[i].cmd = NULL;
-            }
-
-        }
-    }
-
-
-}
-
-void add_job(struct Pipeline *cmd, struct Job jobs[256]){
-
-    // check for any completed jobs up to this point
-    update_job_list(cmd, background);
 
     // insert job to the first invalid slot in the array
     int status = 0;
     for (int i = 0; i < BUFFER_SIZE; i++){
-        if (!jobs[i].valid) {
-            jobs[i].cmd = cmd;
-            jobs[i].valid = 1;
+        if (!background[i].valid) {
+            background[i].cmd = cmd;
+            background[i].valid = 1;
             status = 1;
             break;
         }
@@ -127,7 +85,7 @@ struct Pipeline* process_command(char *buffer){
 
     // malloc a Pipeline, init fields
     struct Pipeline *c = malloc(sizeof(struct Pipeline));
-    *c = (struct Pipeline) {NULL, 0, 0, 0};
+    *c = (struct Pipeline) {NULL, 0, 0, 0, 0};
 
     char *token = NULL;
 
@@ -218,6 +176,10 @@ void wsh_execute(struct Pipeline *c, struct Program *args){
     snprintf(path, BUFFER_SIZE, "/usr/bin/%s", args->tokens[0]);
     int cmd_mode = is_built_in_cmd(args);
 
+    // if exit is called, leave the shell
+    // trying to call the fc ptr in the child will merely exit the child process
+    if (cmd_mode == EXIT) built_in_cmds[EXIT](c, args);
+
     // execute new child process
     pid_t pid = fork();
 
@@ -252,17 +214,18 @@ void wsh_execute(struct Pipeline *c, struct Program *args){
     pid_t pgid; // for setting group id of the current process
 
 
-
     // set pgid based on background bit, else pgid shared with parent
     if (c->bg){
 
-
         // if this program is the first in a chain, set group id to its own pid
-        if (args==c->progs) pgid = pid;
+        if (args==c->progs) {
+            pgid = pid;
+            c->pgid = pid;
+        }
 
         // else, the first (lead) of the group is already initialized
         // set any successive programs in the chain to this pgid
-        else pgid = c->progs[0].pgid;
+        else pgid = c->pgid;
 
     }
     else pgid = getpid();
@@ -270,7 +233,6 @@ void wsh_execute(struct Pipeline *c, struct Program *args){
     // set group id of process
     // record group id in struct
     setpgid(pid, pgid);
-    args->pgid = pgid;
 
 }
 
@@ -329,18 +291,61 @@ void cmd_pipeline(struct Pipeline *cmd){
 
     // wait on all children in the foreground
     if (!cmd->bg) {
-        add_job(cmd, foreground); // add to foreground structure
+        //foreground.cmd = cmd;
+        //foreground.valid = 1;// add to foreground structure
         for (int i = 0; i < cmd->size; i++) {
             int status; // change later, check output
             waitpid(-1, &status, WUNTRACED); // WUNTRACED, WNOHANG
         }
-    } else add_job(cmd, background); // case: job is in the background (post exec wait)
+    } else add_job(cmd); // case: job is in the background (post exec wait)
 
 
 
 }
 
+void sigint_handler(){
+    if (foreground.valid) {
+        killpg(foreground.cmd->pgid, SIGINT);
+        foreground.cmd = NULL;
+        foreground.valid = 0;
+    }
+}
+void sigtstp_handler(){
+    if (foreground.valid){
+
+    }
+}
+
+void sigchld_handler(){
+
+    for (int i = 0; i < BUFFER_SIZE; i++){
+
+        // evaluate "valid" processes
+        if (background[i].valid){
+
+            int status;
+            pid_t rc = waitpid(background[i].cmd->pgid, &status, WNOHANG);
+
+            // rc is <=0 on exit/sleep
+            if (WIFEXITED(status) != 0 || rc < 0) {
+                background[i].valid = 0;
+
+                // free allocated structure when process has exited()
+                wsh_clean(background[i].cmd);
+                background[i].cmd = NULL;
+            }
+
+        }
+    }
+}
+
 void configure_handlers(){
+    if (signal(SIGINT, sigint_handler) == SIG_ERR)
+        WSH_FAULT("Failed to bind sigint handler\n", -1);
+    if (signal(SIGTSTP, sigtstp_handler) == SIG_ERR)
+        WSH_FAULT("Failed to bind sigint handler\n", -1);
+    if (signal(SIGCHLD, sigchld_handler) == SIG_ERR)
+        WSH_FAULT("Failed to bind sigint handler\n", -1);
 
 }
 
@@ -358,12 +363,12 @@ int main(int argc, char **argv){
 
     // NOTE: things to add to clean --> free any mallocs on exit, close any open files
     char *buffer; // <NULL>
+    configure_handlers();
 
     while (1){
 
-        if (mode) printf("wsh> "); // check if interactive mode (1)
-
-        // EOF CASE - CTRL + D
+        // EOF CASE - CTRL + D, check this before printing shell prompt
+        // so duplicate prompt doesn't print on force quit
         if (feof(stdin)) {
             if (!mode) {
                 fclose(fp); // Free allocation to batch file if applicable
@@ -371,6 +376,8 @@ int main(int argc, char **argv){
             }
             SAFE_EXIT("\n");
         }
+
+        if (mode) printf("wsh> "); // check if interactive mode (1)
 
         if (getline(&buffer, &BUFFER_SIZE, stdin) >= 0) {
             // if stdin stream is non-empty, process any inputs
