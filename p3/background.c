@@ -3,7 +3,8 @@
 
 int main(int argc, char **argv){
     while(1){
-        sleep(5);
+        printf("zeke\n");
+        sleep(10);
     }
 
     return 0;

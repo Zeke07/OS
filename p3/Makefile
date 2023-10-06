@@ -25,8 +25,8 @@ submit: pack $(LOGIN).tar.gz
 os_tests:
 	~cs537-1/tests/P3/test-exec.csh
 	~cs537-1/tests/P3/test-pipe.csh -v
-    #~cs537-1/tests/P3/test-cd.csh
-    #~cs537-1/tests/P3/test-job-control.csh
+	~cs537-1/tests/P3/test-cd.csh
+	~cs537-1/tests/P3/test-job-control.csh
 zeke_tests: background.c
 	$(CC) $(CFLAGS) -o background background.c
 
