@@ -57,13 +57,9 @@ struct Pipeline {
 struct Job {
     struct Pipeline *cmd;
     int valid; // if program is not terminated (all 0 upon init)
-    int init_bg;
-    int suspended;
-    char usr_input[256];
 };
 
-struct Job background[256];
-struct Job foreground[256];
+struct Job jobs[256];
 
 // built-in commands
 int wsh_exit(struct Pipeline *cmd, struct Program *args);
@@ -82,10 +78,10 @@ int wsh_execute(struct Pipeline *c, struct Program *args);
 void cmd_pipeline(struct Pipeline *cmd);
 void close_fds(int *pipes, int size);
 void wsh_clean(struct Pipeline *c);
-void add_job(struct Pipeline *cmd, struct Job *jobs, int susp);
+void add_job(struct Pipeline *cmd);
 void format_job(char string_builder[256], struct Job *job, int id);
 void job_status(struct Job *job);
-int fetch_id(struct Job *jobs, char mode);
+int fetch_id();
 
 // signal handlers, terminal control
 void configure_handlers();

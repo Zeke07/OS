@@ -6,20 +6,18 @@
 #include "wsh.h"
 
 
-struct Job background[256];
-struct Job foreground[256];
+struct Job jobs[256];
 
 void format_job(char string_builder[256], struct Job *job, int id){
 
     char *ptr = string_builder;
     snprintf(string_builder, BUFFER_SIZE, "%d: ", id);
     ptr+=3;
-    snprintf(ptr, BUFFER_SIZE, "%s", job->usr_input);
-    int len = strlen(job->usr_input);
-
+    snprintf(ptr, BUFFER_SIZE, "%s", job->cmd->usr_input);
+    int len = strlen(job->cmd->usr_input);
     ptr+=len;
 
-    if (job->init_bg) snprintf(ptr, BUFFER_SIZE," &");
+    if (job->cmd->init_bg) snprintf(ptr, BUFFER_SIZE," &");
 
 }
 
@@ -32,9 +30,10 @@ int wsh_jobs(){
 
     for (int i = 0; i < BUFFER_SIZE; i++){
 
-        if (background[i].valid) {
+        job_status(jobs+i);
+        if (jobs[i].valid && jobs[i].cmd->bg) {
             char line[BUFFER_SIZE];
-            format_job(line, background+i, i+1);
+            format_job(line, jobs+i, i+1);
             printf("%s\n", line);
         }
     }
@@ -42,50 +41,93 @@ int wsh_jobs(){
     return 0;
 }
 
-int fetch_id(struct Job *jobs, char mode){
+int fetch_id(){
     for (int i = BUFFER_SIZE-1; i >= 0; i--) {
-        if (mode == 'f' && jobs[i].valid)
+        if (jobs[i].valid && jobs[i].cmd->bg)
             return i;
-
     }
     return -1;
 }
 
-// USE TSET, SIGNALS NOT RECEIVED
 int wsh_fg(struct Pipeline *cmd, struct Program *args) {
 
+    int id;
+    if (args->size < 3) id = fetch_id();
+    else id = atoi(args->tokens[1]) - 1;
 
+    if (id >= 0 && id < BUFFER_SIZE){
+
+        killpg(jobs[id].cmd->pgid, SIGCONT);
+        jobs[id].cmd->bg = 0;
+        tcsetpgrp(0, jobs[id].cmd->pgid);
+        for (int i = 0; i < jobs[id].cmd->size; i++) {
+            int status;
+            waitpid(jobs[id].cmd->progs[i].pid, &status, WUNTRACED);
+            if (!WIFEXITED(status)) jobs[id].cmd->bg = 1;
+        }
+        if (jobs[id].cmd->bg)
+            tcsetpgrp(0, getpgid(getpid()));
+
+        else {
+            jobs[id].valid = 0;
+            wsh_clean(jobs[id].cmd);
+            jobs[id].cmd = NULL;
+        }
+        return 0;
+    }
+    else SAFE_EXIT("Bad ID specified: fg");
+    /*
     int id;
     if (args->size < 3) id = fetch_id(background, 'f');
     else id = atoi(args->tokens[1]) - 1;
-    //printf("ID FOUND: (%d)", id);
+
     if (id >= 0 && id < BUFFER_SIZE) {
 
         killpg(background[id].cmd->pgid, SIGCONT);
-        add_job(background[id].cmd, foreground, 0);
-        background[id].valid = 0;
-        //printf("Call on: %d", background[id].cmd->pgid);
+        add_job(background[id].cmd, foreground);
+
+        tcsetpgrp(0, background[id].cmd->pgid);
         for (int i = 0; i < background[id].cmd->size; i++) {
             int status;
             waitpid(background[id].cmd->progs[i].pid, &status, WUNTRACED); // WUNTRACED, WNOHANG, use pid of each child!
         }
+        tcsetpgrp(0, getpgid(getpid()));
 
+        background[id].valid = 0;
+        wsh_clean(background[id].cmd);
+        background[id].cmd = NULL;
     }
+    */
     return 0;
+
 }
+
 int wsh_bg(struct Pipeline *cmd, struct Program *args){
 
     int id;
+    if (args->size < 3) id = fetch_id();
+    else id = atoi(args->tokens[1]) - 1;
+
+    if (id >= 0 && id < BUFFER_SIZE) {
+        killpg(jobs[id].cmd->pgid, SIGCONT);
+        return 0;
+    }
+    SAFE_EXIT("Bad ID specified: bg")
+    /*
+    int id;
     if (args->size < 3) id = fetch_id(background, 'f');
     else id = atoi(args->tokens[1]) - 1;
-    //printf("ID FOUND: (%d)", id);
+
     if (id >= 0 && id < BUFFER_SIZE)
         killpg(background[id].cmd->pgid, SIGCONT);
 
-    return 0;
+     */
+
+
 }
 
 int wsh_cd(struct Pipeline *cmd, struct Program *args){
+
     if (args->size == 3){
         int status = chdir(args->tokens[1]);
         if (status < 0) SAFE_EXIT("Bad filepath: cd\n")
@@ -95,20 +137,17 @@ int wsh_cd(struct Pipeline *cmd, struct Program *args){
     SAFE_EXIT("Poor usage: cd <filepath>\n");
 }
 
-void add_job(struct Pipeline *cmd, struct Job *jobs, int susp){
-
+void add_job(struct Pipeline *cmd){
 
     // insert job to the first invalid slot in the array
     int status = 0;
     for (int i = 0; i < BUFFER_SIZE; i++){
+
+        job_status(jobs+i);
         if (!jobs[i].valid) {
 
             jobs[i].cmd = cmd;
             jobs[i].valid = 1;
-            jobs[i].init_bg = cmd->init_bg;
-            jobs[i].suspended = susp;
-            strncpy(jobs[i].usr_input, cmd->usr_input, BUFFER_SIZE);
-           // printf("Job added: (%s,%d, %d)\n", jobs[i].usr_input, jobs[i].valid, jobs[i].suspended);
             status = 1;
             break;
         }
@@ -117,6 +156,27 @@ void add_job(struct Pipeline *cmd, struct Job *jobs, int susp){
     // job list is full
     if (!status) SAFE_EXIT("Job could not be appended\n");
 }
+void job_status(struct Job *job){
+    if (job->valid){
+        int remove = 1;
+        for (int i = 0; i < job->cmd->size; i++){
+            int status;
+            pid_t rc = waitpid(job->cmd->progs[i].pid, &status, WNOHANG); //pid_t rc =
+
+            if (!WIFSIGNALED(status) || (!WIFEXITED(status) && rc >= 0))
+                remove = 0;
+        }
+
+        if (remove){
+            job->valid = 0;
+            wsh_clean(job->cmd);
+            job->cmd = NULL;
+        }
+
+
+    }
+}
+
 
 struct Pipeline* process_command(char *buffer){
 
@@ -223,11 +283,11 @@ int wsh_execute(struct Pipeline *c, struct Program *args){
     // if exit is called, leave the shell
     // trying to call the fc ptr in the child will merely exit the child process
     if (cmd_mode == EXIT) built_in_cmds[EXIT](c, args);
-    else if (cmd_mode > 1) { // change to 2 later
+    else if (cmd_mode > 0) { // change to 2 later
         if (c->size > 1){
             SAFE_EXIT("Misplaced built-in command\n");}
         else
-        {built_in_cmds[cmd_mode](c, args);}
+        { built_in_cmds[cmd_mode](c, args);}
         return 0;
     }
 
@@ -339,39 +399,36 @@ void cmd_pipeline(struct Pipeline *cmd) {
     close_fds(pipes, n_descriptors);
 
 
-    // used to ensure waits are not issued on built_ins while background processes in op (BUG REPAIR)
+    // used to ensure waits and job-processing are not issued on built_ins while background processes in op
     if (rc) {
         // wait on all children in the foreground
-
+        add_job(cmd);
         if (!cmd->bg) {
-            add_job(cmd, foreground, 0);
+
+            tcsetpgrp(0, cmd->pgid);
             for (int i = 0; i < cmd->size; i++) {
                 int status; // change later, check output
                 //fprintf(stderr, "VALUE: %p\n", (void*) (cmd->progs+i));
                 waitpid(cmd->progs[i].pid, &status, WUNTRACED); // WUNTRACED, WNOHANG, use pid of each child!
+                if (!WIFEXITED(status)) cmd->bg = 1;
             }
-        } else add_job(cmd, background, 0);
-/*
-            printf("FIRST FOREGROUND JOBS\n");
-            for (int i = 0; i < 10; i++){
-                printf("%d: (%s,%d) ", i, foreground[i].usr_input, foreground[i].valid);
-            }
-            printf("\n");
-
-            printf("FIRST BACKGROUND JOBS\n");
-            for (int i = 0; i < 10; i++){
-                printf("%d: (%s,%d) ", i, background[i].usr_input, background[i].valid);
-            }
-            printf("\n");
-            */
+            tcsetpgrp(0, getpgid(getpid()));
         }
-
-
+    }
+    /*
+    printf("FIRST 10 JOBS\n");
+    for (int i = 0; i < 10; i++){
+        if (jobs[i].cmd == NULL) printf("%d: () ", i);
+        else
+            printf("%d: (%s,%d) ", i, jobs[i].cmd->usr_input, jobs[i].valid);
+    }
+    printf("\n");
+     */
 }
 
 
-
 void sigint_handler(){
+    /*
     for (int i = 0; i < BUFFER_SIZE; i++) {
         if (foreground[i].valid) {
             int status;
@@ -382,9 +439,11 @@ void sigint_handler(){
             }
         }
     }
+     */
 }
 void sigtstp_handler(){
    // printf("TRIGGERED\n");
+   /*
     for (int i = 0; i < BUFFER_SIZE; i++) {
         if (foreground[i].valid) {
            // printf("READY TO STOP: %s\n", foreground[i].usr_input);
@@ -395,57 +454,19 @@ void sigtstp_handler(){
 
         }
     }
+    */
 }
 
-void job_status(struct Job *job){
-    if (job->valid){
-       // printf("NEW JOB\n");
-        int remove = 1;
-        for (int i = 0; i < job->cmd->size; i++){
-            int status;
-            pid_t rc = waitpid(job->cmd->progs[i].pid, &status, WNOHANG); //pid_t rc =
-            //printf("EVALUATING STATUS (rc %d, stopped %d, stat %d) OF: (%s,%d) with PID: %d\n", rc, WIFSTOPPED(status), WIFEXITED(status), job->cmd->usr_input, job->valid,job->cmd->progs[i].pid);
-            //
-            if (!WIFSIGNALED(status) || (!WIFEXITED(status) && rc >= 0)) remove = 0;
-
-        }
-
-        if (remove){
-
-            // NOTE: move clean-up to add_jobs when a new job will be overwritten, and upon exit
-           // printf("JOB TERMINATED: (%s,%d)\n", job->usr_input, job->valid);
-            job->valid = 0;
-
-        }
-
-    }
-
-
-}
-
-void sigchld_handler(){
-
-    // RACE CONDITION ON JOB STRUCTS, ACCESSING FREED DATA
-    // NEED to add extra checks when
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-        job_status(background+i);
-        job_status(foreground+i);
-    }
-
-
-}
 
 void configure_handlers(){
     if (signal(SIGINT, sigint_handler) == SIG_ERR)
         WSH_FAULT("Failed to bind sigint handler\n", -1);
     if (signal(SIGTSTP, sigtstp_handler) == SIG_ERR)
         WSH_FAULT("Failed to bind sigint handler\n", -1);
-    if (signal(SIGCHLD, sigchld_handler) == SIG_ERR)
-        WSH_FAULT("Failed to bind sigint handler\n", -1);
-    if (signal(SIGTTOU, SIG_IGN) == SIG_ERR) // CHANGE BLOCKER LATER
+    if (signal(SIGTTOU, SIG_IGN) == SIG_ERR)
         WSH_FAULT("Failed to bind sigint handler\n", -1);
     setpgid(0,0);
-    tcsetpgrp(0, getpgrp());
+    tcsetpgrp(0, getpgid(getpid()));
 
 }
 
