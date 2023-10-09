@@ -30,6 +30,11 @@ os_tests:
 zeke_tests: background.c
 	$(CC) $(CFLAGS) -o background background.c
 
+leak:
+	valgrind --leak-check=yes --log-file=$@.rpt ./wsh
+leak_2:
+	valgrind --leak-check=yes --log-file=$@.rpt ~cs537-1/tests/P3/test-job-control.csh
+
 clean:
 	rm -f wsh
 	rm -f *.o
